@@ -447,21 +447,8 @@ function AssistantMessageBlock({
       }
       return <AssistantRedactedThinkingMessage addMargin={addMargin} />
     case 'thinking': {
-      if (!isTranscriptMode && !verbose) {
-        return null
-      }
-      // In transcript mode with hidePastThinking, only show the last thinking block
-      const isLastThinking =
-        !lastThinkingBlockId || thinkingBlockId === lastThinkingBlockId
-      return (
-        <AssistantThinkingMessage
-          addMargin={addMargin}
-          param={param as ThinkingBlockParam | { type: 'thinking'; thinking: string }}
-          isTranscriptMode={isTranscriptMode}
-          verbose={verbose}
-          hideInTranscript={isTranscriptMode && !isLastThinking}
-        />
-      )
+      // Thinking content is hidden from display
+      return null
     }
     case 'server_tool_use':
     case 'advisor_tool_result':

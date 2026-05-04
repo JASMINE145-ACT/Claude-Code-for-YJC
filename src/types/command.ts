@@ -22,10 +22,24 @@ export type LocalCommandResult =
     }
   | { type: 'skip' } // Skip messages
 
+export type WorkflowStepResult = {
+  [outcome: string]: string | undefined
+}
+
+export type WorkflowStep = {
+  name: string
+  description?: string
+  skill?: string
+  confirmRequired?: boolean
+  onResult?: WorkflowStepResult
+}
+
 export type PromptCommand = {
   type: 'prompt'
   progressMessage: string
   contentLength: number // Length of command content in characters (used for token estimation)
+  workflowSteps?: WorkflowStep[]
+  workflowConfirmRequired?: boolean // global default for steps without their own confirmRequired
   argNames?: string[]
   allowedTools?: string[]
   model?: string

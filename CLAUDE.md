@@ -2,6 +2,67 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Highest Priority: Behavioral Guidelines
+
+These guidelines reduce common LLM coding mistakes. Merge them with project-specific instructions as needed.
+
+Tradeoff: these guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+Do not assume. Do not hide confusion. Surface tradeoffs.
+
+Before implementing:
+- State assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them. Do not pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop, name what is confusing, and ask.
+
+### 2. Simplicity First
+
+Write the minimum code that solves the problem. Nothing speculative.
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No flexibility or configurability that was not requested.
+- No error handling for impossible scenarios.
+- If you wrote 200 lines and it could be 50, rewrite it.
+- Ask: would a senior engineer consider this overcomplicated? If yes, simplify.
+
+### 3. Surgical Changes
+
+Touch only what is necessary. Clean up only your own mess.
+
+When editing existing code:
+- Do not improve adjacent code, comments, or formatting unless required.
+- Do not refactor code that is unrelated to the task.
+- Match existing style, even if you would do it differently.
+- If unrelated dead code is noticed, mention it. Do not delete it.
+
+When your changes create orphans:
+- Remove imports, variables, and functions that became unused because of your changes.
+- Do not remove pre-existing dead code unless asked.
+
+Test: every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+Define success criteria and loop until verified.
+
+Transform tasks into verifiable goals:
+- Add validation -> write tests for invalid inputs, then make them pass.
+- Fix a bug -> write a test that reproduces it, then make it pass.
+- Refactor X -> ensure tests pass before and after.
+
+For multi-step tasks, state a brief plan:
+1. [Step] -> verify: [check]
+2. [Step] -> verify: [check]
+3. [Step] -> verify: [check]
+
+Strong success criteria support independent loops. Weak criteria ("make it work") require frequent clarification.
+
+These guidelines are working if: fewer unnecessary diff changes, fewer rewrites caused by overcomplication, and clarifying questions come before implementation mistakes.
+
 ## Project Overview
 
 This is a **reverse-engineered / decompiled** version of Anthropic's official Claude Code CLI tool. The goal is to restore core functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. TypeScript strict mode is enforced — **`bunx tsc --noEmit` must pass with zero errors**.
@@ -15,7 +76,7 @@ This is a **reverse-engineered / decompiled** version of Anthropic's official Cl
 ```
 
 常见 type：`feat`、`fix`、`docs`、`chore`、`refactor`
-
+                            
 示例：
 - `feat: 添加模型 1M 上下文切换`
 - `fix: 修复初次登陆的校验问题`
@@ -63,6 +124,28 @@ bun run rcs
 # Docs dev server (Mintlify)
 bun run docs:dev
 ```
+
+## Windows PowerShell 执行规范
+
+**路径含空格的目录**：始终使用 PowerShell，不要混用 bash/cmd。
+
+标准格式：
+```powershell
+Set-Location -LiteralPath '项目路径'
+npx <command> <args>
+```
+
+禁止：
+- `cmd /c "cd ... && bun run ..."` — 路径解析错误
+- `bash -c "cd '/mnt/d/...' && ..."` — WSL 缺少 bun
+
+**agent-jk control-ui 测试**（vitest + jsdom，非 browser）：
+```powershell
+Set-Location -LiteralPath 'D:\Projects\agent-jk\Agent Team version3\control-ui'
+npx vitest run src/ui/views/chat.test.ts -t '<test name>' -v --browser.enabled=false --environment jsdom
+```
+
+---
 
 详细的测试规范、覆盖状态和改进计划见 `docs/testing-spec.md`。
 

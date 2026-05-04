@@ -1,5 +1,42 @@
 # DEV-LOG
 
+## 修复 dragleave 不触发 onComposeDragLeave（2026-05-01）
+
+**文件**: `D:\Projects\agent-jk\Agent Team version3\control-ui\src\ui\views\chat.ts`
+
+**问题**：拖拽文件进聊天页面后松开鼠标，"松开以上传 Excel/PDF" 提示层不消失。
+
+**根因**：`handleDragLeave` 中 `if (next == null) return;` 导致松开鼠标时（`relatedTarget === null`）直接 return，`onComposeDragLeave` 不被调用。
+
+**修复**：
+```typescript
+// Before:
+if (next == null) return;
+if (el.contains(next)) return;
+props.onComposeDragLeave?.();
+
+// After:
+if (next != null && el.contains(next)) return;
+props.onComposeDragLeave?.();
+```
+
+**测试**: `chat.test.ts` 新增 test case，19 个测试全部 PASS，无回归。
+
+---
+
+## 项目隔离配置启动脚本 (2026-04-17)
+
+为避免本项目调试配置影响用户全局正版 Claude Code 配置，新增项目级启动脚本：
+
+- 新增 `start-ccb.ps1`
+- 启动时自动创建项目内 `.claude-local/` 目录（若不存在）
+- 将 `CLAUDE_CONFIG_DIR` 指向项目内 `.claude-local`
+- 最后执行 `bun run dev`
+
+效果：本项目写入 `settings.json`、认证信息与缓存路径时将优先落在项目隔离目录，不再污染 `%USERPROFILE%\.claude`。
+
+---
+
 ## /poor 省流模式 (2026-04-11)
 
 新增 `/poor` 命令，toggle 关闭 `extract_memories` 和 `prompt_suggestion`，省 token。

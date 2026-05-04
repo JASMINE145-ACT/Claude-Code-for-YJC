@@ -4,6 +4,8 @@ import type {
   TextBlockParam,
 } from '@anthropic-ai/sdk/resources'
 import { randomUUID } from 'crypto'
+import * as React from 'react'
+import { useState } from 'react'
 import { setPromptId } from 'src/bootstrap/state.js'
 import {
   builtInCommandNames,
@@ -15,6 +17,9 @@ import {
   hasCommand,
   type PromptCommand,
 } from 'src/commands.js'
+import { WorkflowProgress } from '../../components/WorkflowProgress.js'
+import type { WorkflowStep } from '../../types/command.js'
+import { SKILL_TOOL_NAME } from '@claude-code-best/builtin-tools/tools/SkillTool/constants.js'
 import { NO_CONTENT_MESSAGE } from 'src/constants/messages.js'
 import type { SetToolJSXFn, ToolUseContext } from 'src/Tool.js'
 import type {
@@ -151,6 +156,32 @@ async function executeForkedSlashCommand(
     `Executing forked slash command /${command.name} with agent ${agentDefinition.agentType}`,
   )
 
+  // Workflow step tracking — set up before runAgent so the UI is visible immediately
+  const workflowSteps: WorkflowStep[] | undefined =
+    command.kind === 'workflow' ? command.workflowSteps : undefined
+  const workflowConfirmRequired =
+    command.kind === 'workflow'
+      ? (command as CommandBase & PromptCommand & { workflowConfirmRequired?: boolean }).workflowConfirmRequired
+      : undefined
+  // Initialize to no-op so callers never need a null check (same pattern as teleportWithProgress)
+  let setWorkflowStep: (step: number) => void = () => {}
+  let workflowStepIndex = 0
+
+  if (workflowSteps && workflowSteps.length > 0) {
+    const steps = workflowSteps
+    function WorkflowWrapper(): React.ReactNode {
+      const [step, _setStep] = useState(0)
+      setWorkflowStep = _setStep
+      return React.createElement(WorkflowProgress, { steps, currentStep: step })
+    }
+    setToolJSX({
+      jsx: React.createElement(WorkflowWrapper),
+      shouldHidePromptInput: false,
+      shouldContinueAnimation: true,
+      showSpinner: true,
+    })
+  }
+
   // Assistant mode: fire-and-forget. Launch subagent in background, return
   // immediately, re-enqueue the result as an isMeta prompt when done.
   // Without this, N scheduled tasks on startup = N serial (subagent + main
@@ -252,6 +283,7 @@ async function executeForkedSlashCommand(
 
   // Collect messages from the forked agent
   const agentMessages: Message[] = []
+  let resultText = ''
 
   // Build progress messages for the agent progress UI
   const progressMessages: ProgressMessage<AgentProgress>[] = []
@@ -291,57 +323,281 @@ async function executeForkedSlashCommand(
     })
   }
 
-  // Show initial "Initializing…" state
-  updateProgress()
+  // Workflow execution state machine for confirmRequired + onResult
+  type WorkflowState =
+    | { phase: 'idle' }
+    | { phase: 'skill_active'; skillStepIndex: number }
+    | { phase: 'confirm_wait' }
+    | { phase: 'done' }
+  let workflowState: WorkflowState = { phase: 'idle' }
 
-  // Run the sub-agent
+  // Helper: build a user message redirecting to a named step
+  const buildStepRedirectMessage = (
+    targetStepName: string,
+  ): UserMessage => {
+    return createUserMessage({
+      content: prepareUserContent({
+        inputString: `[Workflow] Step completed. Proceed to step: ${targetStepName}`,
+        precedingInputBlocks: [],
+      }),
+    })
+  }
+
+  // Helper: build a user confirmation request message
+  const buildConfirmMessage = (
+    stepName: string,
+  ): UserMessage => {
+    return createUserMessage({
+      content: prepareUserContent({
+        inputString: `[Workflow] Step "${stepName}" requires confirmation before proceeding. Reply "confirm" or "y" to continue, or "abort" to stop.`,
+        precedingInputBlocks: [],
+      }),
+    })
+  }
+
+  // Helper: check if a message is a tool_result for the SkillTool
+  const isSkillToolResult = (msg: Message): boolean => {
+    if (msg.type !== 'user') return false
+    const content = (msg as UserMessage).content
+    if (!Array.isArray(content)) return false
+    return content.some(
+      block =>
+        block.type === 'tool_result' &&
+        'tool_use_id' in block &&
+        typeof block.tool_use_id === 'string' &&
+        block.tool_use_id.includes('skill'),
+    )
+  }
+
+  // Helper: resolve the actual confirmRequired for a step
+  const stepNeedsConfirm = (stepIndex: number): boolean => {
+    const step = workflowSteps![stepIndex]!
+    if (step.confirmRequired === true) return true
+    return workflowConfirmRequired === true
+  }
+
+  // Helper: find step index by name
+  const findStepIndexByName = (name: string): number => {
+    return workflowSteps!.findIndex(s => s.name === name)
+  }
+
+  if (!workflowSteps) {
+    updateProgress()
+  }
+
+  // Main workflow loop
   try {
-    for await (const message of runAgent({
-      agentDefinition,
-      promptMessages,
-      toolUseContext: {
-        ...context,
-        getAppState: modifiedGetAppState,
-      },
-      canUseTool,
-      isAsync: false,
-      querySource: 'agent:custom',
-      model: command.model as ModelAlias | undefined,
-      availableTools: context.options.tools,
-    })) {
-      agentMessages.push(message)
-      const normalizedNew = normalizeMessages([message])
+    // Accumulated messages across loop iterations
+    const allAgentMessages: Message[] = []
 
-      // Add progress message for assistant messages (which contain tool uses)
-      if (message.type === 'assistant') {
-        // Increment token count in spinner for assistant messages
-        const contentLength = getAssistantMessageContentLength(message as AssistantMessage)
-        if (contentLength > 0) {
-          context.setResponseLength(len => len + contentLength)
+    while (true) {
+      const currentStepIndex = workflowStepIndex
+
+      if (currentStepIndex >= workflowSteps!.length) {
+        workflowState = { phase: 'done' }
+        break
+      }
+
+      const currentStep = workflowSteps![currentStepIndex]!
+
+      // confirmRequired gate — inject confirmation request before running
+      if (stepNeedsConfirm(currentStepIndex)) {
+        // Inject confirmation message into the agent's context
+        const confirmPrompt = buildConfirmMessage(currentStep.name)
+        for await (const _msg of runAgent({
+          agentDefinition,
+          promptMessages: [confirmPrompt],
+          toolUseContext: {
+            ...context,
+            getAppState: modifiedGetAppState,
+          },
+          canUseTool,
+          isAsync: false,
+          querySource: 'agent:custom',
+          model: command.model as ModelAlias | undefined,
+          availableTools: context.options.tools,
+        })) {
+          // Just run to consume the confirm request and get a reply
+          allAgentMessages.push(_msg)
         }
 
-        const normalizedMsg = normalizedNew[0]
-        if (normalizedMsg && normalizedMsg.type === 'assistant') {
-          progressMessages.push(createProgressMessage(message as AssistantMessage))
-          updateProgress()
+        // Check if user aborted — look for "abort" in the last user message
+        const lastMsg = allAgentMessages[allAgentMessages.length - 1]
+        if (
+          lastMsg?.type === 'user' &&
+          typeof lastMsg.content === 'string' &&
+          lastMsg.content.toLowerCase().includes('abort')
+        ) {
+          resultText = 'Workflow aborted by user'
+          break
+        }
+
+        // User confirmed — continue to run the actual step
+        // Reset messages for this iteration
+        allAgentMessages.length = 0
+      }
+
+      // Mark skill step as active so we can detect when it completes
+      if (currentStep.skill) {
+        workflowState = { phase: 'skill_active', skillStepIndex: currentStepIndex }
+      }
+
+      // Run the sub-agent for this iteration
+      let iterationEnded = false
+      for await (const message of runAgent({
+        agentDefinition,
+        promptMessages,
+        toolUseContext: {
+          ...context,
+          getAppState: modifiedGetAppState,
+        },
+        canUseTool,
+        isAsync: false,
+        querySource: 'agent:custom',
+        model: command.model as ModelAlias | undefined,
+        availableTools: context.options.tools,
+      })) {
+        allAgentMessages.push(message)
+        const normalizedNew = normalizeMessages([message])
+
+        // Advance step index when SkillTool is invoked
+        if (workflowSteps && message.type === 'assistant') {
+          const content = (message as AssistantMessage).message?.content
+          if (Array.isArray(content)) {
+            for (const block of content) {
+              if (
+                block != null &&
+                typeof block === 'object' &&
+                'type' in block &&
+                block.type === 'tool_use' &&
+                'name' in block &&
+                (block as { name: string }).name === SKILL_TOOL_NAME
+              ) {
+                const skillName = (block as { input?: { skill?: string } }).input?.skill
+                if (skillName) {
+                  for (let i = workflowStepIndex; i < workflowSteps.length; i++) {
+                    if (workflowSteps[i]?.skill === skillName) {
+                      workflowStepIndex = i
+                      setWorkflowStep(i)
+                      break
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+
+        // Track skill completion — when we see the tool_result for the SkillTool,
+        // the skill step is done. Evaluate onResult and potentially redirect.
+        if (
+          workflowState.phase === 'skill_active' &&
+          isSkillToolResult(message)
+        ) {
+          workflowState = { phase: 'idle' }
+          const stepResultText = extractResultText(
+            allAgentMessages,
+            'Step completed',
+          )
+
+          if (currentStep.onResult) {
+            for (const [keyword, targetStep] of Object.entries(currentStep.onResult)) {
+              if (stepResultText.toLowerCase().includes(keyword.toLowerCase())) {
+                if (targetStep === 'COMPLETE') {
+                  workflowState = { phase: 'done' }
+                  iterationEnded = true
+                  break
+                }
+                const targetIndex = findStepIndexByName(targetStep!)
+                if (targetIndex >= 0) {
+                  // Redirect: inject step redirect and run another iteration
+                  const redirectMsg = buildStepRedirectMessage(targetStep!)
+                  allAgentMessages.length = 0
+                  workflowStepIndex = targetIndex
+                  setWorkflowStep(targetIndex)
+                  iterationEnded = true
+                  // Inject redirect message as new promptMessages for next iteration
+                  const redirectResult = buildStepRedirectMessage(targetStep!)
+                  for await (const _msg of runAgent({
+                    agentDefinition,
+                    promptMessages: [redirectMsg],
+                    toolUseContext: {
+                      ...context,
+                      getAppState: modifiedGetAppState,
+                    },
+                    canUseTool,
+                    isAsync: false,
+                    querySource: 'agent:custom',
+                    model: command.model as ModelAlias | undefined,
+                    availableTools: context.options.tools,
+                  })) {
+                    allAgentMessages.push(_msg)
+                  }
+                  break
+                }
+              }
+            }
+          }
+
+          if (iterationEnded && workflowState.phase !== 'done') {
+            break
+          }
+        }
+
+        // Add progress message for assistant messages (which contain tool uses)
+        if (message.type === 'assistant') {
+          const contentLength = getAssistantMessageContentLength(message as AssistantMessage)
+          if (contentLength > 0) {
+            context.setResponseLength(len => len + contentLength)
+          }
+
+          if (!workflowSteps) {
+            const normalizedMsg = normalizedNew[0]
+            if (normalizedMsg && normalizedMsg.type === 'assistant') {
+              progressMessages.push(createProgressMessage(message as AssistantMessage))
+              updateProgress()
+            }
+          }
+        }
+
+        // Add progress message for user messages (which contain tool results)
+        if (!workflowSteps && message.type === 'user') {
+          const normalizedMsg = normalizedNew[0]
+          if (normalizedMsg && normalizedMsg.type === 'user') {
+            progressMessages.push(createProgressMessage(normalizedMsg as AssistantMessage))
+            updateProgress()
+          }
         }
       }
 
-      // Add progress message for user messages (which contain tool results)
-      if (message.type === 'user') {
-        const normalizedMsg = normalizedNew[0]
-        if (normalizedMsg && normalizedMsg.type === 'user') {
-          progressMessages.push(createProgressMessage(normalizedMsg as AssistantMessage))
-          updateProgress()
-        }
+      if (iterationEnded) {
+        if (workflowState.phase === 'done') break
+        continue
+      }
+
+      // For non-skill steps: advance normally after iteration completes
+      if (workflowState.phase === 'idle') {
+        workflowStepIndex++
+        setWorkflowStep(workflowStepIndex)
+      }
+
+      if (workflowStepIndex >= workflowSteps!.length) {
+        workflowState = { phase: 'done' }
+        break
       }
     }
+
+    // Show all steps as complete when the workflow finishes
+    if (workflowSteps) {
+      setWorkflowStep(workflowSteps.length)
+    }
+
+    // Extract final result from accumulated messages
+    resultText = extractResultText(allAgentMessages, 'Command completed')
   } finally {
     // Clear the progress display
     setToolJSX(null)
   }
-
-  let resultText = extractResultText(agentMessages, 'Command completed')
 
   logForDebugging(
     `Forked slash command /${command.name} completed with agent ${agentId}`,

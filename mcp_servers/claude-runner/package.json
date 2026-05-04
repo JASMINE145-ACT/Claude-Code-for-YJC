@@ -1,0 +1,10 @@
+{
+  "name": "claude-runner-mcp",
+  "version": "1.0.0",
+  "description": "MCP server that wraps Claude Code CLI as callable tools",
+  "type": "commonjs",
+  "main": "server.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.0"
+  }
+}

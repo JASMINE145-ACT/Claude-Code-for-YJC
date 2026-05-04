@@ -29,4 +29,10 @@ __pycache__/
 *.pyc
 logs
 
+# Claude Code local config (contains user-specific paths/keys)
+.mcp.json
+
+# Python virtual environment
+.venv/
+
 data
