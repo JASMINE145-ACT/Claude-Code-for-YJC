@@ -1,0 +1,31 @@
+name: impl-and-verify
+description: TDD-first workflow: plan → red test → implement → review → green test
+confirmRequired: false
+
+steps:
+  - name: Plan
+    description: Confirm implementation approach before writing code
+    confirmRequired: true
+    skill: superpowers-writing-plans
+
+  - name: Red Test
+    description: Write test that defines expected behavior (must fail first)
+    skill: superpowers-tdd
+
+  - name: Implement
+    description: Write the code to implement the feature or fix
+    # Manual step - Claude writes code here
+
+  - name: Code Review
+    description: Review implementation for correctness and quality
+    skill: superpowers-code-review
+    onResult:
+      needs_changes: Implement
+      approved: Green Test
+
+  - name: Green Test
+    description: Verify red→green pass + regression check
+    skill: superpowers-tdd
+    onResult:
+      failed: Implement
+      passed: COMPLETE

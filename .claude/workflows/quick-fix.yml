@@ -1,0 +1,17 @@
+name: quick-fix
+description: Quick bug fix: reproduce → fix → verify
+confirmRequired: false
+
+steps:
+  - name: Reproduce
+    description: Write a failing test that reproduces the bug
+
+  - name: Fix
+    description: Implement the fix
+
+  - name: Verify
+    description: Run tests to confirm the fix works
+    skill: superpowers-tdd
+    onResult:
+      failed: Fix
+      passed: COMPLETE

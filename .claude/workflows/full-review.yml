@@ -1,0 +1,28 @@
+name: full-review
+description: Full review workflow with manual verification gates
+confirmRequired: false
+
+steps:
+  - name: Plan
+    description: Review requirements and create review plan
+    confirmRequired: true
+    skill: superpowers-writing-plans
+
+  - name: Code Review
+    description: Perform code review
+    confirmRequired: true
+    skill: superpowers-code-review
+    onResult:
+      needs_changes: Implement
+      passed: Security Scan
+
+  - name: Implement
+    description: Address review comments
+
+  - name: Security Scan
+    description: Run security checks
+    confirmRequired: true
+    skill: superpowers-code-review
+    onResult:
+      issues_found: Implement
+      clean: COMPLETE
