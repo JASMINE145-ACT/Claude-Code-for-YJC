@@ -13,6 +13,7 @@ src/utils/vendor/
 # AI tool runtime directories
 .agents/
 .claude/
+!.claude-local/
 .codex/
 .omx/
 .docs/task/
